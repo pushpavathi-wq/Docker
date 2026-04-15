@@ -1,44 +1,63 @@
-# name: CI-CD
+name: CI-CD to ECR and ECS
 
-# on:
-#   push:
-#     branches: [ main ]
+on:
+  push:
+    branches:
+      - main
 
-# jobs:
-#   deploy:
-#     runs-on: ubuntu-latest
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
 
-#     steps:
-#     - uses: actions/checkout@v4
+    steps:
+    # 1. Checkout code
+    - name: Checkout code
+      uses: actions/checkout@v4
 
-    
-#     # 1. Get infra details from Terraform
-#     - name: Get Terraform outputs
-#       id: tf
-#       run: |
-#         echo "ECR_REPO=$(terraform output -raw ecr_repo_url)" >> $GITHUB_ENV
-#         echo "ECS_CLUSTER=$(terraform output -raw ecs_cluster)" >> $GITHUB_ENV
-#         echo "ECS_SERVICE=$(terraform output -raw ecs_service)" >> $GITHUB_ENV
+    # 2. Configure AWS credentials
+    - name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ secrets.AWS_REGION }}
 
-#     # 2. Login to ECR
-#     - name: Login to ECR
-#       uses: aws-actions/amazon-ecr-login@v2
+    # 3. Login to ECR
+    - name: Login to ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v2
 
-#     # 3. Build Docker image
-#     - name: Build image
-#       run: |
-#         IMAGE_URI=$ECR_REPO:latest
-#         docker build -t $IMAGE_URI .
-#         echo "IMAGE_URI=$IMAGE_URI" >> $GITHUB_ENV
+    # 4. Build, tag, push image
+    - name: Build and Push Docker Image
+      env:
+        ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
+        IMAGE_TAG: latest
+      run: |
+        docker build -t $ECR_REPOSITORY:$IMAGE_TAG .
+        docker tag $ECR_REPOSITORY:$IMAGE_TAG ${{ steps.login-ecr.outputs.registry }}/$ECR_REPOSITORY:$IMAGE_TAG
+        docker push ${{ steps.login-ecr.outputs.registry }}/$ECR_REPOSITORY:$IMAGE_TAG
 
-#     # 4. Push image
-#     - name: Push image
-#       run: docker push $IMAGE_URI
+    # 5. Download existing task definition
+    - name: Download task definition
+      run: |
+        aws ecs describe-task-definition \
+          --task-definition ${{ secrets.TASK_DEFINITION }} \
+          --query taskDefinition > task-definition.json
 
-#     # 5. Deploy to ECS
-#     - name: Deploy
-#       run: |
-#         aws ecs update-service \
-#           --cluster $ECS_CLUSTER \
-#           --service $ECS_SERVICE \
-#           --force-new-deployment
+    # 6. Update image in task definition
+    - name: Fill new image in task definition
+      id: task-def
+      uses: aws-actions/amazon-ecs-render-task-definition@v1
+      with:
+        task-definition: task-definition.json
+        container-name: your-container-name
+        image: ${{ steps.login-ecr.outputs.registry }}/${{ secrets.ECR_REPOSITORY }}:latest
+
+    # 7. Deploy to ECS
+    - name: Deploy to ECS
+      uses: aws-actions/amazon-ecs-deploy-task-definition@v1
+      with:
+        task-definition: ${{ steps.task-def.outputs.task-definition }}
+        service: ${{ secrets.ECS_SERVICE }}
+        cluster: ${{ secrets.ECS_CLUSTER }}
+        wait-for-service-stability: true
