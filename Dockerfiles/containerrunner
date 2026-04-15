@@ -1,0 +1,19 @@
+FROM ubuntu:22.04
+
+RUN apt-get update && apt-get install -y \
+    curl \
+    jq \
+    git
+
+# Create runner user
+RUN useradd -m runner
+WORKDIR /home/runner
+
+# Download GitHub runner
+RUN curl -o actions-runner.tar.gz -L https://github.com/actions/runner/releases/latest/download/actions-runner-linux-x64.tar.gz \
+    && tar xzf actions-runner.tar.gz \
+    && rm actions-runner.tar.gz
+
+USER runner
+
+CMD ["./run.sh"]
